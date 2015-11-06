@@ -7,7 +7,14 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 
-#include "gpio.h"
+#include <time.h>
+
+#include "gpio-mmap.h"
+
+#define GPIO_TDI 1
+#define GPIO_TDO 2
+#define GPIO_TMS 4
+#define GPIO_TCK 5
 
 static int jtag_state;
 static int verbose;
@@ -82,6 +89,9 @@ int handle_data(int fd)
 {
 	int i;
 	int seen_tlr = 0;
+	struct timespec tckwait;
+	tckwait.tv_sec = 0;
+	tckwait.tv_nsec = 0;
 
 	do
 	{
@@ -122,10 +132,14 @@ int handle_data(int fd)
 
 		if (verbose)
 		{
-			printf("#");
-			for (i = 0; i < nr_bytes * 2; ++i)
-				printf("%02x ", buffer[i]);
+			printf("tms: ");
+			for (i = 0; i < nr_bytes ; ++i)
+				printf("%d\t%02x ", nr_bytes, buffer[i]);
 			printf("\n");
+                        printf("tdi: ");
+                        for (i = nr_bytes; i < nr_bytes * 2; ++i)
+                                printf("%d\t%02x ", nr_bytes, buffer[i]);
+                        printf("\n");
 		}
 
 		//
@@ -156,11 +170,13 @@ int handle_data(int fd)
 				
 				int tms = !!(buffer[i/8] & (1<<(i&7)));
 				int tdi = !!(buffer[nr_bytes + i/8] & (1<<(i&7)));
-				result[i / 8] |= gpio_get(GPIO_TDO) << (i&7);
-				gpio_set(GPIO_TMS, tms);
-				gpio_set(GPIO_TDI, tdi);
-				gpio_set(GPIO_TCK, 1);
-				gpio_set(GPIO_TCK, 0);
+				result[i / 8] |= GPIO_READ_PIN(GPIO_TDO) << (i&7);
+				GPIO_WRITE_PIN(GPIO_TMS, tms);
+				GPIO_WRITE_PIN(GPIO_TDI, tdi);
+				nanosleep(&tckwait,NULL);
+				GPIO_WRITE_PIN(GPIO_TCK, 1);
+				nanosleep(&tckwait,NULL);
+				GPIO_WRITE_PIN(GPIO_TCK, 0);
 				
 				//
 				// Track the state.
@@ -177,6 +193,11 @@ int handle_data(int fd)
 		if (verbose)
 		{
 			printf("jtag state %d\n", jtag_state);
+			printf("tdo: ");
+                        for (i = 0; i < nr_bytes; ++i)
+                                printf("%d\t%02x ", nr_bytes, result[i]);
+			printf("\n");
+
 		}
 	} while (!(seen_tlr && jtag_state == run_test_idle));
 	return 0;
@@ -207,7 +228,11 @@ int main(int argc, char **argv)
 	// re-setting alternate functions, making input/outputs).
 	//
 	
-	gpio_init();
+	gpio_map();
+	gpio_output(0,1); // TDI
+	gpio_output(0,4); // TMS
+	gpio_output(0,5); // TCK
+	gpio_input(0,2);  // TDO
 	
 	//
 	// Listen on port 2542.
@@ -321,11 +346,6 @@ int main(int argc, char **argv)
 		}
 	}
 	
-	//
-	// Un-map IOs.
-	//
-	
-	gpio_close();
 	
 	return 0;
 }
